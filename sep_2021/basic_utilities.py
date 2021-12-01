@@ -172,17 +172,16 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
 
         if not fast_mode:
             print('Checking the feature exposure of your validation predictions')
-            # Check the feature exposure of your validation predictions
-            validation_stats.loc["feature_neutral_mean", pred_col] = calculate_fnc(example_col, 'target', validation_data)
             
-            max_per_era = max_per_era = validation_data.groupby(ERA_COL).apply(
-                lambda d: d[feature_cols].corrwith(d[pred_col]).abs().max())
+            # Check the feature exposure of your validation predictions            
+            max_per_era = validation_data.groupby(ERA_COL).apply(lambda d: d[feature_cols].corrwith(d[pred_col]).abs().max())
             max_feature_exposure = max_per_era.mean()
             validation_stats.loc["max_feature_exposure", pred_col] = max_feature_exposure
 
             # Check feature neutral mean
-            feature_neutral_mean = get_feature_neutral_mean(validation_data, pred_col)
-            validation_stats.loc["feature_neutral_mean", pred_col] = feature_neutral_mean
+            validation_stats.loc["feature_neutral_mean", pred_col] = calculate_fnc(example_col, 'target', validation_data)
+            #feature_neutral_mean = get_feature_neutral_mean(validation_data, pred_col)
+            #validation_stats.loc["feature_neutral_mean", pred_col] = feature_neutral_mean
 
             # Check top and bottom 200 metrics (TB200)
             tb200_validation_correlations = fast_score_by_date(
