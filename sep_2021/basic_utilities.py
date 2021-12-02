@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np 
+from scipy import stats
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import quantile_transform
 from tqdm import tqdm
@@ -10,6 +11,28 @@ import json
 
 ERA_COL = "era"
 TARGET_COL = "target"
+EXAMPLE_PRED_COL = 'ex_preds'
+CRED = '\033[31m'
+CGREEN = '\033[32m'
+CEND = '\033[0m'
+CBOLD = '\033[1m'
+G_SPACE = 30
+I_SPACE = 19
+R_SPACE = G_SPACE - I_SPACE
+N_SPACE = 7
+
+
+# Some intervals are not up to date
+VALIDATION_METRIC_INTERVALS = {
+    "mean": (0.013, 0.028),
+    "sharpe": (0.53, 1.24),
+    "std": (0.0303, 0.0168),
+    "max_feature_exposure": (0.4, 0.0661),
+    "mmc_mean": (-0.008, 0.008),
+    "corr_plus_mmc_sharpe": (0.41, 1.34),
+    "max_drawdown": (-0.115, -0.025),
+    "feature_neutral_mean": (0.006, 0.022)
+} 
 
 
 # Create new `pandas` methods which use `tqdm` progress
@@ -18,9 +41,25 @@ tqdm.pandas()
 
 training_features_dict = json.load(open('training_features_dict.json'))
 
+def color_metric(metric_value, metric_name):
+    low, high = VALIDATION_METRIC_INTERVALS[metric_name]
+    pct = stats.percentileofscore(np.linspace(low, high, 100),
+                                  metric_value)
+    if high <= low:
+        pct = 100 - pct
+    if pct > 95:  # Excellent
+        return CGREEN
+    elif pct > 75:  # Good
+        return CGREEN
+    elif pct > 35:  # Fair
+        return CEND
+    else:  # Bad
+        return CRED
+
+
 
 def autocorr(x, t=1):
-    return np.corrcoef([x[:-t], x[t:]])
+    return np.corrcoef([x[:-t], x[t:]])[0,1]
 
 def get_riskiest_features(df, target='target',features=None, group='era', num=50):
     if features == None:
@@ -87,11 +126,13 @@ def normif(df):
 
 def get_feature_neutral_mean(df, prediction_col):
     feature_cols = [c for c in df.columns if c.startswith("feature")]
-    df.loc[:, "neutral_sub"] = full_neutralization(df, feature_cols, pred_name=prediction_col, proportion=1.0)
+    df['sub'] = unif(df[prediction_col])
+    df.loc[:, "neutral_sub"] = full_neutralization(df, feature_cols, pred_name='sub', proportion=1.0)
     # neutralize(df, [prediction_col],
     #                                       feature_cols)
+    df = df.drop('sub', axis=1)
     scores = df.groupby("era").progress_apply(
-        lambda x: (unif(x["neutral_sub"]).corr(x[TARGET_COL]))).mean()
+        lambda x: ((x["neutral_sub"]).corr(x[TARGET_COL]))).mean()
     return np.mean(scores)
 
 def calculate_fnc(pred_name, target, df):
@@ -172,11 +213,10 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
 
         if not fast_mode:
             print('Checking the feature exposure of your validation predictions')
-            # Check the feature exposure of your validation predictions
-            validation_stats.loc["feature_neutral_mean", pred_col] = calculate_fnc(example_col, 'target', validation_data)
             
-            max_per_era = validation_correlations.abs().max()
-            max_feature_exposure = max_per_era.mean()
+            # Check the feature exposure of your validation predictions  
+            max_per_era = validation_data.groupby(ERA_COL).apply(lambda d: d.filter(like='feature').corrwith(d[example_col]).abs().max())
+            max_feature_exposure = np.mean(max_per_era)
             validation_stats.loc["max_feature_exposure", pred_col] = max_feature_exposure
 
             # Check feature neutral mean
@@ -204,7 +244,7 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
         mmc_scores = []
         corr_scores = []
         for _, x in tqdm(validation_data.groupby(ERA_COL)):
-            series = neutralize_series(unif(x[pred_col]), (x[example_col]))
+            series = neutralize_series(unif(x[pred_col]), unif(x[EXAMPLE_PRED_COL]))
             mmc_scores.append(np.cov(series, x[TARGET_COL])[0, 1] / (0.29 ** 2))
             corr_scores.append(unif(x[pred_col]).corr(x[TARGET_COL]))
 
@@ -217,12 +257,12 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
         validation_stats.loc["corr_plus_mmc_sharpe", pred_col] = corr_plus_mmc_sharpe
 
         # Check correlation with example predictions
-        per_era_corrs = validation_data.groupby(ERA_COL).progress_apply(lambda d: unif(d[example_col]).corr(unif(d['target'])))
-        corr_with_example_preds = per_era_corrs.mean()
+        per_era_corrs = validation_data.groupby(ERA_COL).progress_apply(lambda d: unif(d[pred_col]).corr(unif(d[EXAMPLE_PRED_COL])))
+        corr_with_example_preds = np.mean(per_era_corrs)
         validation_stats.loc["corr_with_example_preds", pred_col] = corr_with_example_preds
         
         # Autocorrelation (not correct)
-        validation_stats.loc["autocorr", pred_col] = autocorr(validation_data[example_col])[0,1]
+        validation_stats.loc["autocorr", pred_col] = autocorr(validation_data[pred_col])
         
     # .transpose so that stats are columns and the model_name is the row
     return tb200_validation_correlations.squeeze(),validation_correlations,validation_stats.transpose()
@@ -246,30 +286,33 @@ def make_cum_plot(df, ax, title):
     ax.xaxis.set_major_locator(plt.MultipleLocator(5))
     return figure
 
+def fmt_score(score, spacing):
+    return str(round(score, 4)).rjust(spacing)
+
+def score_line(df,title, pred_name):
+    pred = df.first_valid_index()
+    return f'{title.ljust(I_SPACE)}{color_metric(df.loc[pred, pred_name],pred_name)}{fmt_score(df.loc[pred, pred_name], N_SPACE).ljust(R_SPACE)}{CEND}'
+
 def print_scores(df):
-    G_SPACE = 30
-    I_SPACE = 19
-    R_SPACE = G_SPACE - I_SPACE
-    N_SPACE = 7
     pred = df.first_valid_index()
     # Headers
-    print(f'{"Performance".ljust(G_SPACE)}{"Risk".ljust(G_SPACE)}{"MMC".ljust(G_SPACE)}{"Other".ljust(G_SPACE)}')
+    print(f'{CBOLD}{"Performance".ljust(G_SPACE)}{"Risk".ljust(G_SPACE)}{"MMC".ljust(G_SPACE)}{"Other".ljust(G_SPACE)}{CEND}')
     print() # Empty line for better spacing
     # First line
-    output = f'{"Sharpe ratio".ljust(I_SPACE)}{str(round(df.loc[pred, "sharpe"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
-    output += f'{"Std. Dev.".ljust(I_SPACE)}{str(round(df.loc[pred, "std"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
-    output += f'{"Corr + MMC Sharpe".ljust(I_SPACE)}{str(round(df.loc[pred, "corr_plus_mmc_sharpe"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
-    output += f'{"APY".ljust(I_SPACE)}{str(round(df.loc[pred, "apy"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
+    output = score_line(df,"Sharpe ratio", "sharpe")
+    output += score_line(df,"Std. Dev.", "std")
+    output += score_line(df,"Corr + MMC Sharpe", "corr_plus_mmc_sharpe")
+    output += f'{"APY".ljust(I_SPACE)}{str(round(df.loc[pred, "apy"],4)).rjust(R_SPACE)}{CEND}'
     print(output)
     # Second line
-    output = f'{"Corr.".ljust(I_SPACE)}{str(round(df.loc[pred, "mean"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
-    output += f'{"Feat. Exposure".ljust(I_SPACE)}{str(round(df.loc[pred, "max_feature_exposure"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
-    output += f'{"MMC Mean".ljust(I_SPACE)}{str(round(df.loc[pred, "mmc_mean"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
-    output += f'{"Autocorr.".ljust(I_SPACE)}{str(round(df.loc[pred, "autocorr"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
+    output = score_line(df,"Corr.", "mean")
+    output += score_line(df,"Feat. Exposure", "max_feature_exposure")
+    output += score_line(df,"MMC Mean", "mmc_mean")
+    output += f'{"Autocorr.".ljust(I_SPACE)}{str(round(df.loc[pred, "autocorr"],4)).rjust(R_SPACE)}'
     print(output)
     # Third line
-    output = f'{"FNC".ljust(I_SPACE)}{str(round(df.loc[pred, "feature_neutral_mean"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
-    output += f'{"Max DrawDown".ljust(I_SPACE)}{str(round(df.loc[pred, "max_drawdown"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
+    output = score_line(df,"FNC.", "feature_neutral_mean")
+    output += score_line(df,"Max DrawDown", "max_drawdown")
     output += f'{"Ex. Preds Corr".ljust(I_SPACE)}{str(round(df.loc[pred, "corr_with_example_preds"],4)).rjust(N_SPACE).ljust(R_SPACE)}'
     print(output)
     print() # Empty line for better spacing
