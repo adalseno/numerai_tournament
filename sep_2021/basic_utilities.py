@@ -220,8 +220,9 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
             validation_stats.loc["max_feature_exposure", pred_col] = max_feature_exposure
 
             # Check feature neutral mean
-            feature_neutral_mean = get_feature_neutral_mean(validation_data, pred_col)
-            validation_stats.loc["feature_neutral_mean", pred_col] = feature_neutral_mean
+            validation_stats.loc["feature_neutral_mean", pred_col] = calculate_fnc(example_col, 'target', validation_data)
+            #feature_neutral_mean = get_feature_neutral_mean(validation_data, pred_col)
+            #validation_stats.loc["feature_neutral_mean", pred_col] = feature_neutral_mean
 
             # Check top and bottom 200 metrics (TB200)
             tb200_validation_correlations = fast_score_by_date(
