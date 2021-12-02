@@ -175,6 +175,8 @@ def fast_score_by_date(df, columns, target, tb=None, era_col="era"):
 
 
 def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False):
+    tb200_validation_correlations = None
+    validation_correlations = None
     validation_stats = pd.DataFrame()
     feature_cols = [c for c in validation_data if c.startswith("feature_")]
     for pred_col in pred_cols:
@@ -220,9 +222,8 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
             validation_stats.loc["max_feature_exposure", pred_col] = max_feature_exposure
 
             # Check feature neutral mean
-            validation_stats.loc["feature_neutral_mean", pred_col] = calculate_fnc(example_col, 'target', validation_data)
-            #feature_neutral_mean = get_feature_neutral_mean(validation_data, pred_col)
-            #validation_stats.loc["feature_neutral_mean", pred_col] = feature_neutral_mean
+            feature_neutral_mean = get_feature_neutral_mean(validation_data, pred_col)
+            validation_stats.loc["feature_neutral_mean", pred_col] = feature_neutral_mean
 
             # Check top and bottom 200 metrics (TB200)
             tb200_validation_correlations = fast_score_by_date(
@@ -240,6 +241,8 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
             validation_stats.loc["tb200_mean", pred_col] = tb200_mean
             validation_stats.loc["tb200_std", pred_col] = tb200_std
             validation_stats.loc["tb200_sharpe", pred_col] = tb200_sharpe
+            
+            tb200_validation_correlations = tb200_validation_correlations.squeeze()
 
         # MMC over validation
         mmc_scores = []
@@ -264,9 +267,10 @@ def validation_metrics(validation_data, pred_cols, example_col, fast_mode=False)
         
         # Autocorrelation (not correct)
         validation_stats.loc["autocorr", pred_col] = autocorr(validation_data[pred_col])
+          
         
     # .transpose so that stats are columns and the model_name is the row
-    return tb200_validation_correlations.squeeze(),validation_correlations,validation_stats.transpose()
+    return tb200_validation_correlations,validation_correlations,validation_stats.transpose()
 
 
 def make_plot(df, ax, title):
